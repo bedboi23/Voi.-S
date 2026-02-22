@@ -72,7 +72,7 @@ def create_now_playing_embed(player, current_pos, total_duration):
     # Left sidebar - Track info
     embed.add_field(
         name="**Track info**",
-        value=f"**{player.title[:45]}**
+        value=f"**{player.title[:45]}**"
 "
               f"🎨 **Artist:** {player.uploader[:20]}
 "
