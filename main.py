@@ -7,11 +7,11 @@ import os
 import time
 
 # --- CONFIGURATION ---
-# Matches your Railway variable named "TOKEN"
 TOKEN = os.getenv("TOKEN") 
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Required to see your voice state
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 queues = {}
@@ -19,9 +19,7 @@ now_playing = {}
 
 # --- YTDL SOURCE CLASS ---
 class YTDLSource(discord.PCMVolumeTransformer):
-    # FIXED: Added double underscores to __init__
     def __init__(self, source, *, data, volume=0.5):
-        # FIXED: Added double underscores to super().__init__
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title", "Unknown Track")
@@ -80,7 +78,6 @@ def create_now_playing_embed(player, current_pos, total_duration):
 # --- BOT EVENTS ---
 @bot.event
 async def on_ready():
-    # Logs successfully captured in image
     print(f"✅ {bot.user} is online!")
     try:
         synced = await bot.tree.sync()
@@ -88,7 +85,6 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Sync error: {e}")
 
-# --- PLAY NEXT LOGIC ---
 async def play_next(guild):
     if guild.id not in queues or not queues[guild.id]:
         now_playing.pop(guild.id, None)
@@ -121,7 +117,7 @@ async def animate_progress(guild, player):
     except Exception:
         pass
 
-# --- COMMANDS ---
+# --- UPDATED PLAY COMMAND ---
 @bot.tree.command(name="play", description="Play a song from YouTube")
 async def play(interaction: discord.Interaction, query: str):
     if not interaction.user.voice:
@@ -130,13 +126,13 @@ async def play(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
 
     try:
-        # Improved connection logic to handle handshake timeouts
-        if not interaction.guild.voice_client:
-            vc = await interaction.user.voice.channel.connect(timeout=20.0, reconnect=True)
-        else:
-            vc = interaction.guild.voice_client
-            if vc.channel != interaction.user.voice.channel:
-                await vc.move_to(interaction.user.voice.channel)
+        # FIX: Force cleanup of existing ghost connections
+        if interaction.guild.voice_client:
+            await interaction.guild.voice_client.disconnect(force=True)
+            await asyncio.sleep(1)
+
+        # FIX: Increased timeout to 60s for high-latency handshakes
+        vc = await interaction.user.voice.channel.connect(timeout=60.0, reconnect=True)
 
         if interaction.guild.id not in queues:
             queues[interaction.guild.id] = []
@@ -146,6 +142,7 @@ async def play(interaction: discord.Interaction, query: str):
         data = await bot.loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
         if "entries" in data: data = data["entries"][0]
 
+        # PCMVolumeTransformer requires ffmpeg, which is now in your nixpacks.toml
         player = YTDLSource(discord.FFmpegPCMAudio(data["url"], **ffmpeg_options), data=data)
         queues[interaction.guild.id].append(player)
 
@@ -157,6 +154,8 @@ async def play(interaction: discord.Interaction, query: str):
         else:
             await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
 
+    except asyncio.TimeoutError:
+        await interaction.followup.send("❌ Voice handshake timed out. Please set your Discord Voice Region to 'US East'!")
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {str(e)}")
 
@@ -171,5 +170,4 @@ async def stop(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Not in voice", ephemeral=True)
 
-# Run using Railway variable
 bot.run(TOKEN)
