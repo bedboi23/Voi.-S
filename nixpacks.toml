@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg"]
+nixPkgs = ["python311", "ffmpeg", "gcc", "libopus", "opus-tools"]
 
 [variables]
 PYTHON_VERSION = "3.11"
