@@ -1,14 +1,14 @@
-import os
 import discord
 from discord import app_commands
 from discord.ext import commands
 import yt_dlp
 import asyncio
+import os
 import time
 
 # --- CONFIGURATION ---
-# We use os.getenv directly. Railway will provide these.
-TOKEN = os.getenv("DISCORD_TOKEN")
+# Removed load_dotenv() since you are using Railway Variables directly
+TOKEN = os.getenv("TOKEN") 
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -19,11 +19,13 @@ now_playing = {}
 
 # --- YTDL SOURCE CLASS ---
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data, volume=0.5): # Corrected to __init__
+    # FIXED: Added double underscores to __init__
+    def __init__(self, source, *, data, volume=0.5):
+        # FIXED: Added double underscores to super().__init__
         super().__init__(source, volume)
         self.data = data
         self.title = data.get("title", "Unknown Track")
-        self.duration = data.get("duration", 0)
+        self.duration = data.get("duration", 180)
         self.thumbnail = data.get("thumbnail")
         self.uploader = data.get("uploader", "Unknown Artist")
 
@@ -34,7 +36,7 @@ ytdl_format_options = {
     "noplaylist": True,
     "quiet": True,
     "default_search": "auto",
-    "source_address": "0.0.0.0", # Bind to ipv4 since ipv6 can cause 403 errors
+    "source_address": "0.0.0.0", # Helps prevent 403 Forbidden errors
 }
 
 ffmpeg_options = {
@@ -46,7 +48,8 @@ ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
 
 # --- HELPER FUNCTIONS ---
 def create_progress_bar(current, total, length=20):
-    if total <= 0: return "🔵" + "─" * (length - 1)
+    if total == 0:
+        return "🔵" + "─" * (length - 1)
     percent = min(current / total, 1)  
     filled = int(percent * length)  
     bar = "─" * filled + "🔵" + "─" * max(0, length - filled - 1)  
@@ -78,7 +81,7 @@ def create_now_playing_embed(player, current_pos, total_duration):
 # --- BOT EVENTS ---
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user} is online and ready!")
+    print(f"✅ {bot.user} is online!")
     try:
         synced = await bot.tree.sync()
         print(f"🔄 Synced {len(synced)} slash commands")
@@ -92,12 +95,15 @@ async def play_next(guild):
         return
 
     vc = guild.voice_client
-    if not vc: return
+    if not vc:
+        return
 
     player = queues[guild.id].pop(0)
 
     def after_playing(error):
-        if error: print(f"Playback error: {error}")
+        if error:
+            print(f"Playback error: {error}")
+        # Schedule next song safely
         asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
 
     vc.play(player, after=after_playing)
@@ -110,18 +116,18 @@ async def play_next(guild):
 async def animate_progress(guild, player):
     try:
         while guild.id in now_playing and guild.voice_client and guild.voice_client.is_playing():
-            msg = now_playing[guild.id]["message"]
-            start_time = now_playing[guild.id]["start_time"]
-            elapsed = time.time() - start_time
+            data = now_playing[guild.id]
+            elapsed = time.time() - data["start_time"]
             
             embed = create_now_playing_embed(player, elapsed, player.duration)
-            await msg.edit(embed=embed)
-            await asyncio.sleep(5) # Edit every 5s to avoid rate limits
+            await data["message"].edit(embed=embed)
+            await asyncio.sleep(5) # Edited frequency to 5s to avoid Discord rate limits
     except Exception:
         pass
 
-# --- SLASH COMMANDS ---
+# --- COMMANDS ---
 @bot.tree.command(name="play", description="Play a song from YouTube")
+@app_commands.describe(query="Song name or YouTube URL")
 async def play(interaction: discord.Interaction, query: str):
     if not interaction.user.voice:
         return await interaction.response.send_message("❌ Join a voice channel first!", ephemeral=True)
@@ -134,9 +140,14 @@ async def play(interaction: discord.Interaction, query: str):
         if interaction.guild.id not in queues:
             queues[interaction.guild.id] = []
 
-        # Extract info
-        data = await bot.loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{query}", download=False))
-        if "entries" in data: data = data["entries"][0]
+        # Use search or URL
+        search_query = f"ytsearch1:{query}" if not query.startswith(("http://", "https://")) else query
+        
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
+
+        if "entries" in data:
+            data = data["entries"][0]
 
         player = YTDLSource(discord.FFmpegPCMAudio(data["url"], **ffmpeg_options), data=data)
         queues[interaction.guild.id].append(player)
@@ -150,9 +161,37 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.followup.send(f"✅ Added to queue: **{player.title}**")
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: {str(e)}")
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
-@bot.tree.command(name="stop", description="Stop music")
+# --- CONTROLS ---
+@bot.tree.command(name="pause", description="Pause music")
+async def pause(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        await interaction.response.send_message("⏸️ Paused", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Nothing playing", ephemeral=True)
+
+@bot.tree.command(name="resume", description="Resume music")
+async def resume(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await interaction.response.send_message("▶️ Resumed", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Not paused", ephemeral=True)
+
+@bot.tree.command(name="skip", description="Skip current song")
+async def skip(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and (vc.is_playing() or vc.is_paused()):
+        vc.stop()
+        await interaction.response.send_message("⏭️ Skipped", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Nothing playing", ephemeral=True)
+
+@bot.tree.command(name="stop", description="Stop music and disconnect")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc:
@@ -161,8 +200,7 @@ async def stop(interaction: discord.Interaction):
         await vc.disconnect()
         await interaction.response.send_message("⏹️ Stopped and disconnected")
     else:
-        await interaction.response.send_message("❌ Not in a voice channel", ephemeral=True)
+        await interaction.response.send_message("❌ Not in voice channel", ephemeral=True)
 
-# (Other commands like pause/resume/skip go here...)
-
+# Run the bot using the variable name "TOKEN" to match your Railway dashboard
 bot.run(TOKEN)
