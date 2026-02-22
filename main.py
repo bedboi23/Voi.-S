@@ -132,7 +132,9 @@ async def play(interaction: discord.Interaction, query: str):
             await asyncio.sleep(1)
 
         # FIX: Increased timeout to 60s for high-latency handshakes
-        vc = await interaction.user.voice.channel.connect(timeout=60.0, reconnect=True)
+        # Replace your connect line with this:
+vc = await interaction.user.voice.channel.connect(timeout=60.0, self_deaf=True)
+
 
         if interaction.guild.id not in queues:
             queues[interaction.guild.id] = []
